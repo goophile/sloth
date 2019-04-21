@@ -10,11 +10,18 @@ import hashlib
 import struct
 from collections import OrderedDict
 from bitstring import Bits
+from enum import Enum
 
 
 __all__ = (
-    'WebSocketClientHandshake', 'WebSocketFrameHeader', 'websocket_mask',
-    'pack_2bytes', 'pack_8bytes', 'unpack_2bytes', 'unpack_8bytes')
+    'WSMessageType',
+    'WebSocketClientHandshake',
+    'WebSocketFrameHeader',
+    'websocket_mask',
+    'pack_2bytes',
+    'pack_8bytes',
+    'unpack_2bytes',
+    'unpack_8bytes')
 
 
 def pack_2bytes(i: int) -> bytes:
@@ -47,6 +54,11 @@ def unpack_8bytes(b: bytes) -> int:
 
 class WebSocketError(Exception):
     """raise when parse WebSocket error"""
+
+
+class WSMessageType(Enum):
+    TEXT = 1
+    BINARY = 2
 
 
 def websocket_mask(mask, data):
@@ -196,12 +208,12 @@ class WebSocketClientHandshake():
     """
 
     GUID = '258EAFA5-E914-47DA-95CA-C5AB0DC85B11'
-    SWITCHING_PROTOCOLS = 'HTTP/1.1 101 Switching Protocols\r\n'
+    SWITCHING_PROTOCOLS = 'HTTP/1.1 101'
 
     def __init__(self, host, port, uri, header=None):
         self.host = host
         self.port = port
-        self.uri = '/{}'.format(uri.strip('/'))
+        self.uri = f"/{uri.strip('/')}"
         self.header = header
         self._sec_key = base64.b64encode(os.urandom(16)).decode('ascii')
         self._sec_accept = base64.b64encode(
@@ -214,7 +226,7 @@ class WebSocketClientHandshake():
 
         str_ = ''
         for key, value in dict_.items():
-            str_ += '{key}: {value}\r\n'.format(key=key, value=value)
+            str_ += f'{key}: {value}\r\n'
         return str_
 
     def _header_str_to_dict(self, str_):
@@ -249,7 +261,7 @@ class WebSocketClientHandshake():
         if str(self.port) in ('80', '443'):
             header_host = self.host
         else:
-            header_host = '{}:{}'.format(self.host, self.port)
+            header_host = f'{self.host}:{self.port}'
 
         header_dict = OrderedDict([
             ('Host', header_host),
@@ -265,7 +277,7 @@ class WebSocketClientHandshake():
 
         header_str = self._header_dict_to_str(header_dict)
 
-        request_str = 'GET {} HTTP/1.1\r\n'.format(self.uri)
+        request_str = f'GET {self.uri} HTTP/1.1\r\n'
         request_str += header_str
         request_str += '\r\n'
         return request_str.encode('ascii')
@@ -284,6 +296,7 @@ class WebSocketClientHandshake():
         response_str = response_str.decode('ascii')
 
         if not response_str.startswith(self.SWITCHING_PROTOCOLS):
+            print(response_str)
             raise WebSocketError('Response not starts with HTTP/1.1 101 Switching Protocols')
 
         header_str = response_str.split('\r\n\r\n')[0]
@@ -297,8 +310,7 @@ class WebSocketClientHandshake():
             raise WebSocketError('Response not include Connection: Upgrade')
 
         if header_dict.get('sec-websocket-accept') != self._sec_accept.lower():
-            print('Response Sec-WebSocket-Accept: {}'.format(header_dict.get('sec-websocket-accept')))
-            print('Should be: {}'.format(self._sec_accept))
+            print(f"Response Sec-WebSocket-Accept: {header_dict.get('sec-websocket-accept')}")
+            print(f'Should be: {self._sec_accept}')
             raise WebSocketError('Response Sec-WebSocket-Accept is incorrect')
 
-        return True

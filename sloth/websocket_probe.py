@@ -1,12 +1,19 @@
 #!/usr/bin/env python3
 
+import logging
 import os
 import socket
 import ssl
 
 from .websocket_protocol import (
-    WebSocketClientHandshake, WebSocketFrameHeader, websocket_mask,
-    pack_2bytes, pack_8bytes, unpack_2bytes, unpack_8bytes)
+    WSMessageType,
+    WebSocketClientHandshake,
+    WebSocketFrameHeader,
+    websocket_mask,
+    pack_2bytes,
+    pack_8bytes,
+    unpack_2bytes,
+    unpack_8bytes)
 
 
 class IncompleteReadError(Exception):
@@ -26,7 +33,7 @@ def _recv_exactly(session, n):
         current = session.recv(left)
 
         if not current:
-            raise IncompleteReadError('Should read {} bytes, but got {} bytes'.format(n, n-left))
+            raise IncompleteReadError(f'Should read {n} bytes, but got {n-left} bytes')
         else:
             total += current
 
@@ -75,13 +82,13 @@ def _receive_message(session):
         msg_len = frame.length
 
     data = _recv_exactly(session, msg_len)
-    print('received opcode', frame.opcode)
-    print('received length', msg_len)
+    logging.info(f'received opcode {frame.opcode}')
+    logging.info(f'received length {msg_len}')
     if msg_len < 100:
-        print('received data', data)
+        logging.debug(f'received data {data}')
 
     if frame.opcode == WebSocketFrameHeader.OPCODE_CLOSE and msg_len == 2:
-        print('received close reason', unpack_2bytes(data))
+        logging.info(f'received close reason {unpack_2bytes(data)}')
 
 
 def _close_websocket(session):
@@ -100,23 +107,23 @@ def _handshake(session, host, port, path):
 
 
 def _probe(session, length, message_type):
-    if message_type == 'text':
+    if message_type == WSMessageType.TEXT:
         opcode = WebSocketFrameHeader.OPCODE_TEXT
         data = os.urandom(length//2+1).hex()[:length].encode('ascii')
     else:
         opcode = WebSocketFrameHeader.OPCODE_BINARY
         data = os.urandom(length)
 
-    print('sent length', len(data))
+    logging.info(f'sent length {len(data)}')
     if length < 100:
-        print('sent data', data)
+        logging.debug(f'sent data {data}')
 
     _send_message(session, data, opcode)
     _receive_message(session)
     _close_websocket(session)
 
 
-def probe(host, port, path, length, message_type='text', use_tls=False):
+def probe(host, port, path, length, message_type=WSMessageType.TEXT, use_tls=False):
     """
     Send one message with specified length, and print the response message if any.
     """

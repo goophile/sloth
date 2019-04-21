@@ -1,10 +1,21 @@
 #!/usr/bin/env python3
 
+import logging
 import argparse
+from enum import Enum
 from urllib.parse import urlparse
 
-from sloth.websocket_probe import probe
-from sloth.websocket_attack import attack
+from sloth.websocket_protocol import WSMessageType
+from sloth.websocket_probe import probe as ws_probe
+from sloth.websocket_attack import attack as ws_attack
+
+
+class Protocol(Enum):
+    """
+    Values may not unique, so use name for determination.
+    """
+    WS_TEXT = WSMessageType.TEXT
+    WS_BINARY = WSMessageType.BINARY
 
 
 def _parse_url(target):
@@ -34,23 +45,35 @@ def _parse_url(target):
 
 
 def main():
-    parser = argparse.ArgumentParser(description='Slow and low TCP attack')
+    parser = argparse.ArgumentParser(
+        description='Slow and low TCP(WebSocket) attack',
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter)
 
-    parser.add_argument('--target', required=True, help='IP or domain of the target host.')
-    parser.add_argument('--probe', action='store_true', help='Try send one message with the specified length.')
-    parser.add_argument('--attack', action='store_true', help='Send flood messages with the specified length.')
-    parser.add_argument('--type', default='text', choices=['text', 'binary'], help='Message type, text or binary.')
-    parser.add_argument('--length', help='Length of each message in bytes.')
-    parser.add_argument('--number', help='Parallel session numbers for attack.')
+    parser.add_argument('--verbose', action='store_true', help='Verbose logging')
+    parser.add_argument('--target', required=True, help='Target URL or host')
+    parser.add_argument('--protocol', default=Protocol.WS_TEXT.name, choices=[p.name for p in Protocol], help='Protocol type')
+    parser.add_argument('--length', default='1000', help='Length of each message in bytes')
+    parser.add_argument('--probe', action='store_true', help='Try send one message with the specified length')
+    parser.add_argument('--attack', action='store_true', help='Send flood messages with the specified length')
+    parser.add_argument('--respawn', action='store_true', help='Respawn dead sockets or not (TBD)')
+    parser.add_argument('--session', default='1000', help='Max parallel connection sessions for attack')
+    parser.add_argument('--rate', default='10', help='New connections per second')
     args = parser.parse_args()
+
+    if args.verbose:
+        logging.basicConfig(format="[%(asctime)s] %(message)s", datefmt="%Y-%m-%d %H:%M:%S", level=logging.DEBUG)
+    else:
+        logging.basicConfig(format="[%(asctime)s] %(message)s", datefmt="%Y-%m-%d %H:%M:%S", level=logging.INFO)
 
     use_tls, host, port, path = _parse_url(args.target)
 
     if args.probe:
-        probe(host, port, path, int(args.length), args.type, use_tls)
+        if args.protocol in [Protocol.WS_TEXT.name, Protocol.WS_BINARY.name]:
+            ws_probe(host, port, path, int(args.length), Protocol[args.protocol].value, use_tls)
 
     if args.attack:
-        attack(host, port, path, int(args.length), int(args.number), args.type, use_tls)
+        if args.protocol in [Protocol.WS_TEXT.name, Protocol.WS_BINARY.name]:
+            ws_attack(host, port, path, int(args.length), int(args.session), Protocol[args.protocol].value, use_tls, float(args.rate))
 
 
 if __name__ == '__main__':
